@@ -15,12 +15,16 @@ load_dotenv()
 app = Flask(__name__)
 
 # Database configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL", "sqlite:///usage_metrics.db")
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///metrics.db")
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
 db = SQLAlchemy(app)
 
 # OpenAI key
 openai.api_key = os.getenv("OPENAI_API_KEY")
+if not openai.api_key:
+    print("Warning: OPENAI_API_KEY is not set!")
 
 # ---------------------------
 # Database Model
@@ -40,17 +44,25 @@ with app.app_context():
 index = None
 sources = None
 
-try:
-    index = faiss.read_index("knowledge_base/index.faiss")
-    with open("knowledge_base/sources.json", "r", encoding="utf-8") as f:
-        sources = json.load(f)
-except Exception as e:
-    print("Error loading FAISS index:", e)
+faiss_index_path = "knowledge_base/index.faiss"
+sources_path = "knowledge_base/sources.json"
+
+if os.path.exists(faiss_index_path) and os.path.exists(sources_path):
+    try:
+        index = faiss.read_index(faiss_index_path)
+        with open(sources_path, "r", encoding="utf-8") as f:
+            sources = json.load(f)
+    except Exception as e:
+        print("Error loading FAISS index or sources:", e)
+else:
+    print(f"FAISS index or sources not found: {faiss_index_path}, {sources_path}")
 
 # ---------------------------
 # Helper Functions
 # ---------------------------
 def embed_text(text):
+    if not openai.api_key:
+        raise ValueError("OpenAI API key not set.")
     from openai import OpenAI
     client = OpenAI(api_key=openai.api_key)
     response = client.embeddings.create(
@@ -62,10 +74,14 @@ def embed_text(text):
 def retrieve_context(query, k=3):
     if index is None or sources is None:
         return "Knowledge base not available."
-    query_embedding = embed_text(query)
-    distances, indices = index.search(np.array([query_embedding]), k)
-    context = "\n\n".join([sources[str(i)] for i in indices[0] if str(i) in sources])
-    return context
+    try:
+        query_embedding = embed_text(query)
+        distances, indices = index.search(np.array([query_embedding]), k)
+        context = "\n\n".join([sources[str(i)] for i in indices[0] if str(i) in sources])
+        return context
+    except Exception as e:
+        print("Error retrieving context:", e)
+        return "Knowledge base unavailable."
 
 def generate_response(user_message):
     try:
@@ -96,7 +112,6 @@ Provide an accurate, law-based explanation in clear professional language.
 # ---------------------------
 # Routes
 # ---------------------------
-
 @app.route('/')
 def home():
     return render_template("index.html")
@@ -114,4 +129,5 @@ def chat():
 # Run (for local debugging)
 # ---------------------------
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Only debug locally; Render ignores this block
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
