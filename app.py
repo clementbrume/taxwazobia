@@ -7,6 +7,7 @@ import faiss
 import json
 import numpy as np
 from dotenv import load_dotenv
+import traceback
 
 # Load environment variables
 load_dotenv()
@@ -18,13 +19,10 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///metrics.db")
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
 db = SQLAlchemy(app)
 
 # OpenAI key
 openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    print("Warning: OPENAI_API_KEY is not set!")
 
 # ---------------------------
 # Database Model
@@ -44,25 +42,18 @@ with app.app_context():
 index = None
 sources = None
 
-faiss_index_path = "knowledge_base/index.faiss"
-sources_path = "knowledge_base/sources.json"
-
-if os.path.exists(faiss_index_path) and os.path.exists(sources_path):
-    try:
-        index = faiss.read_index(faiss_index_path)
-        with open(sources_path, "r", encoding="utf-8") as f:
-            sources = json.load(f)
-    except Exception as e:
-        print("Error loading FAISS index or sources:", e)
-else:
-    print(f"FAISS index or sources not found: {faiss_index_path}, {sources_path}")
+try:
+    index = faiss.read_index("knowledge_base/index.faiss")
+    with open("knowledge_base/sources.json", "r", encoding="utf-8") as f:
+        sources = json.load(f)
+except Exception as e:
+    print("Error loading FAISS index:", e)
+    traceback.print_exc()
 
 # ---------------------------
 # Helper Functions
 # ---------------------------
 def embed_text(text):
-    if not openai.api_key:
-        raise ValueError("OpenAI API key not set.")
     from openai import OpenAI
     client = OpenAI(api_key=openai.api_key)
     response = client.embeddings.create(
@@ -73,7 +64,7 @@ def embed_text(text):
 
 def retrieve_context(query, k=3):
     if index is None or sources is None:
-        return "Knowledge base not available."
+        return None
     try:
         query_embedding = embed_text(query)
         distances, indices = index.search(np.array([query_embedding]), k)
@@ -81,12 +72,14 @@ def retrieve_context(query, k=3):
         return context
     except Exception as e:
         print("Error retrieving context:", e)
-        return "Knowledge base unavailable."
+        traceback.print_exc()
+        return None
 
 def generate_response(user_message):
     try:
         context = retrieve_context(user_message)
-        prompt = f"""
+        if context:
+            prompt = f"""
 You are TaxWazobia, an expert Nigerian tax advisor. Use Nigerian tax laws and relevant sections.
 User question: {user_message}
 
@@ -95,6 +88,10 @@ Relevant context:
 
 Provide an accurate, law-based explanation in clear professional language.
 """
+        else:
+            # fallback: no FAISS context
+            prompt = f"You are TaxWazobia, a Nigerian tax advisor. Answer clearly: {user_message}"
+
         from openai import OpenAI
         client = OpenAI(api_key=openai.api_key)
         response = client.chat.completions.create(
@@ -107,7 +104,8 @@ Provide an accurate, law-based explanation in clear professional language.
         return response.choices[0].message.content.strip()
     except Exception as e:
         print("Error generating response:", e)
-        return "Sorry, I encountered an error while processing your question."
+        traceback.print_exc()
+        return f"Sorry, I encountered an error while processing your question: {str(e)}"
 
 # ---------------------------
 # Routes
@@ -129,5 +127,4 @@ def chat():
 # Run (for local debugging)
 # ---------------------------
 if __name__ == '__main__':
-    # Only debug locally; Render ignores this block
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(debug=True)
